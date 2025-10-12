@@ -388,34 +388,34 @@ class SuccessiveHalving:
         plt.show()
 
 
-if __name__ == "__main__":
+# if __name__ == "__main__":
 
-    # Example usage
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--config_space_file", type=str, default="lcdb_config_space_knn.json"
-    )
+#     # Example usage
+#     parser = argparse.ArgumentParser()
+#     parser.add_argument(
+#         "--config_space_file", type=str, default="lcdb_config_space_knn.json"
+#     )
 
-    config_space = ConfigSpace.ConfigurationSpace.from_json(
-        parser.parse_args().config_space_file
-    )
+#     config_space = ConfigSpace.ConfigurationSpace.from_json(
+#         parser.parse_args().config_space_file
+#     )
 
-    # Run Successive Halving on different datasets
-    datasets = [6, 11, 1457]
+#     # Run Successive Halving on different datasets
+#     datasets = [6, 11, 1457]
 
-    for dataset_id in datasets:
-        print(f"\n{'='*60}")
-        print(f"Running Successive Halving on Dataset {dataset_id}")
-        print(f"{'='*60}")
+#     for dataset_id in datasets:
+#         print(f"\n{'='*60}")
+#         print(f"Running Successive Halving on Dataset {dataset_id}")
+#         print(f"{'='*60}")
 
-        sh = SuccessiveHalving(
-            config_space=config_space,
-            dataset_id=dataset_id,
-            min_budget=16,
-            max_budget=1024,
-            eta=2,
-        )
+#         sh = SuccessiveHalving(
+#             config_space=config_space,
+#             dataset_id=dataset_id,
+#             min_budget=16,
+#             max_budget=1024,
+#             eta=2,
+#         )
 
-        results = sh.run(n_initial_configs=50, max_rounds=8)
-        sh.print_summary(results)
-        sh.plot_config_scores(results)
+#         results = sh.run(n_initial_configs=50, max_rounds=8)
+#         sh.print_summary(results)
+#         sh.plot_config_scores(results)
