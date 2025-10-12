@@ -2,8 +2,8 @@ import ConfigSpace
 import numpy as np
 import pandas as pd
 import typing
+import random
 
-from sklearn.pipeline import Pipeline
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.gaussian_process.kernels import RBF
@@ -12,22 +12,22 @@ from scipy.stats import norm
 
 class SequentialModelBasedOptimization(object):
 
-    def __init__(self, config_space):
+    def __init__(self, config_space, random_ratio=0.3):
         """
         Initializes empty variables for the model, the list of runs (capital R), and the incumbent
         (theta_inc being the best found hyperparameters, theta_inc_performance being the performance
         associated with it)
         """
         self.config_space = config_space  # configuration space
-        self.runs = []  # run list, stores all evaluated (configuration, performance) tuples
+        self.runs = (
+            []
+        )  # run list, stores all evaluated (configuration, performance) tuples
         self.theta_inc = None  # the best found hyperparameters
         self.theta_inc_performance = None  # the best performance
         self.scaler = StandardScaler()
-        self.model = GaussianProcessRegressor(random_state=42)
-        # self.model = Pipeline([
-        #     ("scaler", StandardScaler()),
-        #     ("gp", GaussianProcessRegressor(kernel=RBF(), random_state=42))
-        # ])
+        self.model = GaussianProcessRegressor()
+        self.random_ratio = random_ratio  # random_ratio: The proportion of random sampling (0.3 means 30% random, 70% Bayesian)
+        self.iteration = 0
 
     def initialize(
         self, capital_phi: typing.List[typing.Tuple[typing.Dict, float]]
@@ -64,12 +64,34 @@ class SequentialModelBasedOptimization(object):
         configs = [run[0] for run in self.runs]
         performances = [run[1] for run in self.runs]
 
-        # Convert configurations to numeric matrix
-        X = self._configs_to_matrix(configs)
+        # Validate performance data for NaN values
+        performances_array = np.array(performances)
+        if np.isnan(performances_array).any():
+            print("Warning: NaN values detected in performances, replacing with median")
+            median_perf = np.nanmedian(performances_array)
+            performances_array = np.nan_to_num(performances_array, nan=median_perf)
+            performances = performances_array.tolist()
+
+        # Convert configurations to numeric matrix (fit scaler during training)
+        X = self._configs_to_matrix(configs, fit_scaler=True)
         y = np.array(performances)
 
+        # Final validation before training
+        if np.isnan(X).any() or np.isnan(y).any():
+            print("Warning: NaN values detected in training data, replacing with 0")
+            X = np.nan_to_num(X, nan=0.0)
+            y = np.nan_to_num(y, nan=0.0)
+
         # Train the model
-        self.model.fit(X, y)
+        try:
+            self.model.fit(X, y)
+        except Exception as e:
+            print(f"Error fitting model: {e}")
+            print("Attempting to fit with cleaned data...")
+            # Additional cleaning if needed
+            X = np.nan_to_num(X, nan=0.0)
+            y = np.nan_to_num(y, nan=0.0)
+            self.model.fit(X, y)
 
     def select_configuration(self) -> ConfigSpace.Configuration:
         """
@@ -80,15 +102,25 @@ class SequentialModelBasedOptimization(object):
         :return: A size n vector, same size as each element representing the EI of a given
         configuration
         """
-        if self.model is None:
-            # If the model is not trained, randomly select a configuration
+
+        self.iteration += 1
+        # Hybrid strategy: decide whether to use Bayesian optimization or random sampling according to the specified ratio
+        if random.random() < self.random_ratio:
+            # Random sampling
+            print(f"Iteration {self.iteration}: Using random sampling")
             return self.config_space.sample_configuration()
 
-        # Generate candidate configurations
-        candidates = [self.config_space.sample_configuration() for _ in range(100)]
+        # Bayesian optimization
+        print(f"Iteration {self.iteration}: Using Bayesian optimization")
 
-        # Convert candidate configurations to numeric matrix
-        X_candidates = self._configs_to_matrix(candidates)
+        # Generate multiple candidate configurations
+        num_candidates = 100  # Generate 100 candidate configurations
+        candidates = []
+        for _ in range(num_candidates):
+            candidates.append(self.config_space.sample_configuration())
+
+        # Convert candidate configurations to numeric matrix (don't fit scaler during prediction)
+        X_candidates = self._configs_to_matrix(candidates, fit_scaler=False)
 
         # Calculate expected improvement
         ei_values = self.expected_improvement(
@@ -103,18 +135,50 @@ class SequentialModelBasedOptimization(object):
 
         return best_config
 
-    def _configs_to_matrix(self, configs: list) -> np.array:
+    def _configs_to_matrix(self, configs: list, fit_scaler: bool = False) -> np.array:
         """
         Convert a list of configurations to a numeric matrix
 
         :param configs: list of configurations
+        :param fit_scaler: whether to fit the scaler (only True during training)
         :return: numeric matrix
         """
         # Convert to DataFrame and encode
         configs_df = pd.DataFrame([dict(config) for config in configs])
         configs_encoded = pd.get_dummies(configs_df)
 
-        X = self.scaler.fit_transform(configs_encoded)
+        # Handle NaN values by filling with 0
+        configs_encoded = configs_encoded.fillna(0)
+
+        # Check for any remaining NaN values
+        if configs_encoded.isnull().any().any():
+            print(
+                "Warning: NaN values detected in configuration matrix, replacing with 0"
+            )
+            configs_encoded = configs_encoded.fillna(0)
+
+        # Only fit scaler during training, otherwise use transform
+        if fit_scaler:
+            X = self.scaler.fit_transform(configs_encoded)
+            # Store the training columns for consistent encoding
+            self._training_columns = configs_encoded.columns.tolist()
+        else:
+            # Ensure we have the same columns as during training
+            if not hasattr(self, "_training_columns"):
+                # If no training columns stored, fit on current data
+                X = self.scaler.fit_transform(configs_encoded)
+                self._training_columns = configs_encoded.columns.tolist()
+            else:
+                # Align columns with training data
+                configs_encoded = configs_encoded.reindex(
+                    columns=self._training_columns, fill_value=0
+                )
+                X = self.scaler.transform(configs_encoded)
+
+        # Final check for NaN values after scaling
+        if np.isnan(X).any():
+            print("Warning: NaN values detected after scaling, replacing with 0")
+            X = np.nan_to_num(X, nan=0.0)
 
         return X
 
@@ -133,24 +197,52 @@ class SequentialModelBasedOptimization(object):
         :return: A size n vector, same size as each element representing the EI of a given
         configuration
         """
-        # Get predicted mean and standard deviation
+        # Check for NaN values in input
+        if np.isnan(theta).any():
+            print("Warning: NaN values detected in theta, replacing with 0")
+            theta = np.nan_to_num(theta, nan=0.0)
+
+        # Check for NaN values in f_star
+        if np.isnan(f_star):
+            print("Warning: NaN value detected in f_star, using 0")
+            f_star = 0.0
+
+        # ei stands for "expected improvement". In Bayesian optimization, each candidate configuration point will have an ei value,
+        # so ei is actually a vector whose length equals the number of configurations being evaluated. Each ei[i] represents the expected
+        # improvement for candidate configuration theta[i].
+        # The formula for EI (for each candidate point) is:
+        #     EI = (f_star - mu) * Φ(z) + sigma * φ(z)
+        #     where z = (f_star - mu) / sigma
+        #     Φ(z) is the cumulative distribution function (CDF) of the standard normal distribution,
+        #     φ(z) is the probability density function (PDF) of the standard normal distribution.
+
+        # Get the predicted mean (mu) and standard deviation (sigma) for each theta point (both are vectors)
         mu, sigma = model_pipeline.predict(theta, return_std=True)
 
-        # Calculate improvement (f_star - mu), since we are minimizing
+        # Handle NaN values in predictions
+        if np.isnan(mu).any() or np.isnan(sigma).any():
+            print("Warning: NaN values detected in model predictions, replacing with 0")
+            mu = np.nan_to_num(mu, nan=0.0)
+            sigma = np.nan_to_num(sigma, nan=1e-6)
+
+        # Calculate the improvement (vector)
         improvement = f_star - mu
 
-        # Avoid division by zero
+        # 1e-9 is 0.000000001 (a very small number to avoid division by zero)
         sigma = np.maximum(sigma, 1e-9)
 
-        # Calculate standardized improvement
+        # Calculate the standardized improvement z (vector)
         z = improvement / sigma
 
-        # Calculate expected improvement (EI)
-        # EI = improvement * Φ(z) + sigma * φ(z)
-        # where Φ is the CDF of the standard normal distribution, φ is the PDF
+        # Calculate EI for each theta point (vector)
         ei = improvement * norm.cdf(z) + sigma * norm.pdf(z)
 
-        # Ensure EI is non-negative
+        # Handle NaN values in EI calculation
+        if np.isnan(ei).any():
+            print("Warning: NaN values detected in EI calculation, replacing with 0")
+            ei = np.nan_to_num(ei, nan=0.0)
+
+        # Ensure EI is non-negative, result is still a vector
         ei = np.maximum(ei, 0.0)
 
         return ei
