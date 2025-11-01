@@ -36,6 +36,7 @@ class SurrogateModel:
 
         # 4.Handle missing values in numerical features using mean imputation.
         num_cols = X_encoded.select_dtypes(include=["number"]).columns
+        self.num_cols_ = num_cols.tolist()  # Save numeric column names for prediction
         imputer = SimpleImputer(strategy="mean")
         X_encoded[num_cols] = imputer.fit_transform(X_encoded[num_cols])
 
@@ -79,8 +80,10 @@ class SurrogateModel:
         )
 
         # Use the same imputer to transform the numerical columns
-        num_cols = X_new_encoded.select_dtypes(include=["number"]).columns
-        X_new_encoded[num_cols] = self.imputer_.transform(X_new_encoded[num_cols])
+        # Only use the numeric columns that were present during training
+        X_new_encoded[self.num_cols_] = self.imputer_.transform(
+            X_new_encoded[self.num_cols_]
+        )
 
         # Use the trained model to make predictions
         pred = self.model.predict(X_new_encoded)

@@ -34,11 +34,23 @@ class LCCV(VerticalModelEvaluator):
         if current_anchor == previous_anchor:
             return current_performance
 
+        # Calculate slope: performance decreases (loss decreases) as anchor increases
+        # slope = change in performance / change in anchor
+        # Since performance decreases with increasing anchor, slope will be negative
         slope = (previous_performance - current_performance) / (
             previous_anchor - current_anchor
         )
+
+        # Extrapolate to target anchor
         optimistic = current_performance + (target_anchor - current_anchor) * slope
-        return optimistic
+
+        # print(
+        #     f"current_anchor {current_anchor} previous_anchor {previous_anchor} optimistic {optimistic} target_anchor {target_anchor} slope {slope}"
+        #     f"previous_performance {previous_performance} current_performance {current_performance}"
+        # )
+        # Performance (loss) cannot be negative, so clip to 0 at minimum
+        # This is the most optimistic case (loss = 0)
+        return max(0.0, optimistic)
 
     def evaluate_model(
         self, best_so_far: typing.Optional[float], configuration: typing.Dict
@@ -89,16 +101,20 @@ class LCCV(VerticalModelEvaluator):
                     performance,
                     self.final_anchor,
                 )
-                LOGGER.debug(
+                LOGGER.info(
                     "Optimistic extrapolation at anchor %s towards %s: %.6f (best %.6f)",
                     anchor,
                     self.final_anchor,
                     optimistic,
                     best_so_far,
                 )
+
                 # The score in the dataset is a loss value; lower is better
                 if optimistic >= best_so_far:
-                    break
+                    # print(
+                    #     f"Optimistic extrapolation is pooer than best so far: {optimistic} >= {best_so_far}"
+                    # )
+                    return results
 
             previous_anchor = anchor
             previous_performance = performance
