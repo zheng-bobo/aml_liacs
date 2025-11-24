@@ -20,6 +20,7 @@ def parse_args():
         type=str,
         default="./config-performances/config_performances_dataset-6.csv",
     )
+
     # max_anchor_size: connected to the configurations_performance_file. The max value upon which anchors are sampled
     parser.add_argument("--minimal_anchor", type=int, default=256)
     parser.add_argument("--max_anchor_size", type=int, default=16000)
@@ -38,12 +39,62 @@ def run(args):
     config_space = ConfigSpace.ConfigurationSpace.from_json(args.config_space_file)
     df = pd.read_csv(args.configurations_performance_file)
     surrogate_model = SurrogateModel(config_space)
-    surrogate_model.fit(df)
+    surrogate_model.fit(df, test_size=0.2, random_state=42)
 
     # Generate output file name based on configurations_performance_file
     base_name = os.path.splitext(
         os.path.basename(args.configurations_performance_file)
     )[0]
+
+    # Evaluate surrogate model on holdout set
+    print("\n" + "=" * 60)
+    print("Surrogate Model Evaluation Results")
+    print("=" * 60)
+    eval_results = surrogate_model.evaluate()
+    for metric, value in eval_results.items():
+        if isinstance(value, float):
+            print(f"{metric}: {value:.6f}")
+        else:
+            print(f"{metric}: {value}")
+    print("=" * 60 + "\n")
+
+    # Visualize predictions vs actual values
+    plt.figure(figsize=(10, 6))
+    X_test_encoded = pd.get_dummies(surrogate_model.X_test, dummy_na=True)
+    X_test_encoded = X_test_encoded.reindex(
+        columns=surrogate_model.feature_columns_, fill_value=0
+    )
+    X_test_encoded[surrogate_model.num_cols_] = surrogate_model.imputer_.transform(
+        X_test_encoded[surrogate_model.num_cols_]
+    )
+    y_pred = surrogate_model.model.predict(X_test_encoded)
+    y_true = surrogate_model.y_test.values
+
+    plt.scatter(y_true, y_pred, alpha=0.6, s=50)
+    min_val = min(min(y_true), min(y_pred))
+    max_val = max(max(y_true), max(y_pred))
+    plt.plot(
+        [min_val, max_val], [min_val, max_val], "r--", lw=2, label="Perfect Prediction"
+    )
+    plt.xlabel("Actual Performance", fontsize=12)
+    plt.ylabel("Predicted Performance", fontsize=12)
+    # Extract dataset name from base_name (e.g., "config_performances_dataset-6" -> "dataset-6")
+    dataset_name = base_name.split("_")[-1] if "_" in base_name else base_name
+    plt.title(
+        f"Surrogate Model: Predictions vs Actual on {dataset_name}\n"
+        f'Spearman ρ = {eval_results["Spearman Correlation"]:.4f}, '
+        f'R² = {eval_results["R²"]:.4f}, '
+        f'RMSE = {eval_results["RMSE"]:.4f}',
+        fontsize=12,
+    )
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+
+    surrogate_eval_file = f"surrogate_eval_{base_name}.png"
+    plt.savefig(surrogate_eval_file, dpi=300, bbox_inches="tight")
+    print(f"Surrogate model evaluation plot saved to {surrogate_eval_file}")
+    plt.show()
 
     # Run LCCV
     best_so_far_lccv = None
